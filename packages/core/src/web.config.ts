@@ -17,7 +17,7 @@ const isLocalDevelopment = process.env.NODE_ENV === 'development' && resolveReal
 
 export const webConfig = defineConfig({
   info: {
-    id: 'karin-plugin-kkk',
+    id: Root.pluginName,
     name: 'kkk插件',
     description: `Karin 的「抖音」「B站」视频解析/动态推送插件。v${Root.pluginVersion}`,
     icon: {

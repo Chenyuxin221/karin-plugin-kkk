@@ -1,20 +1,20 @@
 {
-  "name": "karin-plugin-kkk",
-  "version": "2.43.0",
+  "name": "@huayunduan/karin-plugin-kkk",
+  "version": "2.43.3",
   "description": "Karin 的「抖音」「B 站」视频解析/动态推送插件",
   "keywords": [
     "karin",
     "karin-plugin"
   ],
-  "homepage": "https://github.com/ikenxuan/karin-plugin-kkk",
+  "homepage": "https://github.com/Chenyuxin221/karin-plugin-kkk",
   "bugs": {
-    "url": "https://github.com/ikenxuan/karin-plugin-kkk/issues"
+    "url": "https://github.com/Chenyuxin221/karin-plugin-kkk/issues"
   },
   "license": "GPL-3.0-only",
-  "author": "ikenxuan",
+  "author": "huayunduan",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ikenxuan/karin-plugin-kkk.git"
+    "url": "git+https://github.com/Chenyuxin221/karin-plugin-kkk.git"
   },
   "files": [
     "config/",
@@ -70,6 +70,7 @@
   },
   "dependencies": {
     "@ikenxuan/qrcode": "1.5.0",
+    "@ikenxuan/watermark": "1.3.1",
     "@lobehub/webfont-geist-mono": "^1.0.0",
     "@lobehub/webfont-harmony-sans-sc": "^1.0.0"
   },
@@ -128,5 +129,5 @@
     "web": "./lib/web.config.js",
     "ts-web": "./src/web.config.ts"
   },
-  "timestamp": "2026-09-16T05:40:25.752Z"
+  "timestamp": "2026-09-29T03:04:24.839Z"
 }

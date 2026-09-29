@@ -7,7 +7,7 @@ import { gzipSync } from 'node:zlib'
 import pc from 'picocolors'
 
 const TARGETS: Record<string, string[]> = {
-  core: ['pnpm', '--filter', 'karin-plugin-kkk', 'run', 'build'],
+  core: ['pnpm', '--filter', '@huayunduan/karin-plugin-kkk', 'run', 'build'],
   docs: ['pnpm', '--filter', 'docs', 'run', 'build'],
   web: ['pnpm', '--filter', 'web', 'run', 'build']
 }

@@ -11,7 +11,7 @@
     "build:all": "kkk build core web docs",
     "build:core": "kkk build core",
     "build:docs": "kkk build docs",
-    "dev": "pnpm --filter karin-plugin-kkk run dev",
+    "dev": "pnpm --filter @huayunduan/karin-plugin-kkk run dev",
     "docs": "pnpm --filter docs run dev",
     "lint": "oxlint .",
     "format": "oxfmt",
@@ -20,8 +20,8 @@
     "sort": "pnpm -r sort",
     "postinstall": "pnpm --filter @ikenxuan/amagi run build",
     "web": "pnpm --filter web run dev",
-    "template": "pnpm --filter karin-plugin-kkk run template",
-    "watch": "pnpm --filter karin-plugin-kkk run watch"
+    "template": "pnpm --filter @huayunduan/karin-plugin-kkk run template",
+    "watch": "pnpm --filter @huayunduan/karin-plugin-kkk run watch"
   },
   "dependencies": {
     "@ikenxuan/amagi": "workspace:*",

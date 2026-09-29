@@ -7,6 +7,7 @@ import type { AdapterType, Elements, ImageElement, Message } from 'node-karin'
 import karin, { common, logger, segment } from 'node-karin'
 
 import {
+  applyWatermarkToImages,
   Base,
   baseHeaders,
   buildGoogleMotionPhoto,
@@ -301,7 +302,8 @@ export class DouYinpush extends Base {
             img = await renderLiveImage({
               e: this.e,
               Detail_Data: pushItem.Detail_Data,
-              dynamicTypeLabel: '直播动态推送'
+              dynamicTypeLabel: '直播动态推送',
+              skipWatermark: true
             })
             break
           }
@@ -312,7 +314,8 @@ export class DouYinpush extends Base {
               Detail_Data: pushItem.Detail_Data,
               create_time: pushItem.create_time,
               shareLink: workShareLink!,
-              remark: pushItem.remark
+              remark: pushItem.remark,
+              skipWatermark: true
             })
             break
           }
@@ -323,7 +326,8 @@ export class DouYinpush extends Base {
               Detail_Data: pushItem.Detail_Data,
               create_time: pushItem.create_time,
               shareLink: workShareLink!,
-              remark: pushItem.remark
+              remark: pushItem.remark,
+              skipWatermark: true
             })
             break
           }
@@ -335,7 +339,8 @@ export class DouYinpush extends Base {
               Detail_Data: pushItem.Detail_Data,
               create_time: pushItem.create_time,
               shareLink: workShareLink!,
-              videoSource: selectedVideo
+              videoSource: selectedVideo,
+              skipWatermark: true
             })
             break
           }
@@ -355,7 +360,7 @@ export class DouYinpush extends Base {
           const eventWithBot = this.e as Message & { bot?: AdapterType; selfId?: string }
           eventWithBot.bot = bot
           eventWithBot.selfId = botId
-          const pushImg = img ?? []
+          const pushImg = img ? applyWatermarkToImages(img, this.e) : []
 
           // 仅 QQ 官方机器人支持按钮：非直播作品在卡片末尾追加「解析」回调按钮，点击后下发 #解析 + 分享链接
           const parseButton =
