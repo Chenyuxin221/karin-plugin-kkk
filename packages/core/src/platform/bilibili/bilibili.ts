@@ -17,7 +17,7 @@ import type { BilibiliForwardOriginalContentProps } from '@template/template/bil
 import { DecorationCardData } from '@template/template/bilibili/dynamic/types'
 import { format, formatDistanceToNow, fromUnixTime } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
-import karin, { common, ElementTypes, logger, Message, segment, SendMessage } from 'node-karin'
+import karin, { common, ElementTypes, Message, segment, SendMessage } from 'node-karin'
 
 import type { ParseWorkType } from '@/module/db'
 import {
@@ -41,6 +41,7 @@ import {
 } from '@/module/utils'
 import { bilibiliFetcher, isSoftFailure, SOFT_ERROR_CODES, softFetch } from '@/module/utils/amagiClient'
 import { Config } from '@/module/utils/Config'
+import { logger } from '@/module/utils/logger'
 import { bilibiliComments, BilibiliId, checkCk, genParams } from '@/platform/bilibili'
 import { type BiliDanmakuElem, burnBiliDanmaku, getHotDanmaku, mergeAndBurnBili } from '@/platform/bilibili/danmaku'
 import {
@@ -286,7 +287,8 @@ export class Bilibili extends Base {
                 Resolution:
                   Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64
                     ? null
-                    : `${playUrlData.data.data.dash.video[0].width} x ${playUrlData.data.data.dash.video[0].height}`
+                    : `${playUrlData.data.data.dash.video[0].width} x ${playUrlData.data.data.dash.video[0].height}`,
+                AuthorAvatar: infoData.data.data.owner.face
               })
               this.e.reply(img)
             }
@@ -1079,7 +1081,8 @@ export class Bilibili extends Base {
                     : `https://t.bilibili.com/${dynamicInfo.data.data.item.id_str}`,
                 ImageLength: dynamicInfo.data.data.item.modules?.module_dynamic?.major?.draw?.items?.length ?? 0,
                 shareurl: '动态分享链接',
-                Resolution: null
+                Resolution: null,
+                AuthorAvatar: dynamicInfo.data.data.item.modules.module_author.face
               })
               this.e.reply(img)
             } else {
@@ -1729,7 +1732,7 @@ export const getvideosize = async (videourl: string, audiourl: string | undefine
     const totalSizeInMB = parseFloat(videoSizeInMB) + parseFloat(audioSizeInMB)
     return totalSizeInMB.toFixed(2)
   } catch (error) {
-    logger.warn(`[karin-plugin-kkk] 获取视频大小失败: ${error instanceof Error ? error.message : String(error)}`)
+    logger.warn(`获取视频大小失败: ${error instanceof Error ? error.message : String(error)}`)
     return '0.00'
   }
 }

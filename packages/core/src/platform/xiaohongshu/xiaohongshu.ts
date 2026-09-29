@@ -1,10 +1,9 @@
 import fs from 'node:fs'
 
-import type { NoteComments, XiaohongshuEmojiListResponse } from '@ikenxuan/amagi'
+import type { XiaohongshuNoteCommentsResponse, XiaohongshuEmojiListResponse } from '@ikenxuan/amagi'
 import type { RichTextEmojiDefinition } from '@kkk/richtext'
 import { format } from 'date-fns'
-import { common, type Elements, type Message, segment } from 'node-karin'
-import { logger } from 'node-karin'
+import { common, type Elements, type Message, logger, segment } from 'node-karin'
 
 import {
   Base,
@@ -72,7 +71,7 @@ export class Xiaohongshu extends Base {
    * @param data - 笔记 id 与 xsec_token
    * @returns 响应体（fetcher 失败即抛），`data.comments` 已是合并后的全部评论
    */
-  private async fetchConfiguredNoteComments(data: XiaohongshuIdData): Promise<NoteComments> {
+  private async fetchConfiguredNoteComments(data: XiaohongshuIdData): Promise<XiaohongshuNoteCommentsResponse> {
     return (
       await this.amagi.xiaohongshu.fetcher.fetchNoteComments({
         note_id: data.note_id,
@@ -126,14 +125,15 @@ export class Xiaohongshu extends Base {
         await this.e.reply('这个笔记没有评论 ~')
       } else {
         // 使用简化的评论处理函数，直接返回评论数组
-        const processedComments = await xiaohongshuComments(CommentData, formattedEmojis)
+        const processedComments = xiaohongshuComments(CommentData, formattedEmojis)
 
         const commentListImg = await Render(this.e, 'xiaohongshu/comment', {
           Type: NoteData.data.data.items[0].note_card!.video ? '视频' : '图文',
           CommentsData: processedComments,
           CommentLength: processedComments.length,
           ImageLength: NoteData.data.data.items[0].note_card!.image_list?.length || 0,
-          share_url: `https://www.xiaohongshu.com/discovery/item/${data.note_id}?source=webshare&xhsshare=pc_web&xsec_token=${data.xsec_token}&xsec_source=pc_share`
+          share_url: `https://www.xiaohongshu.com/discovery/item/${data.note_id}?source=webshare&xhsshare=pc_web&xsec_token=${data.xsec_token}&xsec_source=pc_share`,
+          AuthorAvatar: NoteData.data.data.items[0].note_card.user.avatar
         })
         this.e.reply(commentListImg)
       }
