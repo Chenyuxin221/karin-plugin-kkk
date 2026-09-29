@@ -1,6 +1,6 @@
 {
   "name": "@huayunduan/karin-plugin-kkk",
-  "version": "2.43.4",
+  "version": "2.43.5",
   "description": "Karin 的「抖音」「B 站」视频解析/动态推送插件",
   "keywords": [
     "karin",
@@ -129,5 +129,5 @@
     "web": "./lib/web.config.js",
     "ts-web": "./src/web.config.ts"
   },
-  "timestamp": "2026-09-29T04:06:14.630Z"
+  "timestamp": "2026-09-29T04:32:45.827Z"
 }
