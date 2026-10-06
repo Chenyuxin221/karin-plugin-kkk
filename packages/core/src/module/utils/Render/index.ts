@@ -8,7 +8,10 @@ import { db, karinPathHtml, render, segment } from 'node-karin'
 import { Root } from '@/module'
 import { Config } from '@/module/utils/Config'
 import { logger } from '@/module/utils/logger'
+// 注册 Unicode emoji 图源解析器（emoji-datasource-apple，见 utils/emojiAssets.ts）
+import '@/module/utils/emojiAssets'
 
+import { parseReleaseChannel } from '../releaseChannel'
 import { isSemverGreater } from '../semver'
 import { templateFonts } from '../templateFonts'
 import { resolveUseDarkTheme } from './coverTheme'
@@ -64,15 +67,17 @@ export const Render = async <P extends keyof LoadedRegistry>(
 ): Promise<ImageElement[]> => {
   const templateType = path.split('/')[0]
 
-  // 检查是否有可用更新
+  // 检查是否有可用更新（任一渠道已推送过提醒且其版本仍高于当前版本）
   let hasUpdate = false
   if (!Config.app.RemoveWatermark) {
     try {
-      const UPDATE_LOCK_KEY = 'kkk:update:lock'
-      const lockedVersion = await db.get(UPDATE_LOCK_KEY)
-      if (typeof lockedVersion === 'string' && lockedVersion.length > 0) {
+      for (const channel of ['stable', 'beta', 'rc']) {
+        const lockedVersion = await db.get(`kkk:update:lock:${channel}`)
         // 锁定版本必须严格大于当前版本才认为有可用更新
-        hasUpdate = isSemverGreater(lockedVersion, Root.pluginVersion)
+        if (typeof lockedVersion === 'string' && lockedVersion.length > 0 && isSemverGreater(lockedVersion, Root.pluginVersion)) {
+          hasUpdate = true
+          break
+        }
       }
     } catch {
       // 忽略错误，默认无更新
@@ -101,7 +106,7 @@ export const Render = async <P extends keyof LoadedRegistry>(
           plugin: 'karin-plugin',
           pluginName: 'kkk',
           pluginVersion: Root.pluginVersion,
-          releaseType: /^\d+\.\d+\.\d+$/.test(Root.pluginVersion) ? ('Stable' as const) : ('Preview' as const),
+          releaseType: parseReleaseChannel(Root.pluginVersion),
           poweredBy: 'Karin',
           frameworkVersion: Root.karinVersion,
           hasUpdate
