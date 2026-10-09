@@ -3,15 +3,17 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import process from 'node:process'
 
 import * as clack from '@clack/prompts'
+import chalk from 'chalk'
 
 import { changelogSections } from './changelog-types'
+import { isSemverGreater } from '../packages/core/src/module/utils/semver'
 
 /**
  * 本地发版入口：`pnpm run release`（`--dry` 只预览 CHANGELOG 条目）
  *
  * 流程：守卫（main / 工作区干净 / 与远端同步）→ 打印自上个 tag 以来的提交清单
- * → 交互选择版本（选项感知当前 prerelease 线：beta.1 已发 → 建议 beta.2 /
- * 转正 / 下一功能线）→ 收集上一个 tag 以来的提交（不分渠道，只写增量小节，互不重复；
+ * → 交互选择版本（以最近 stable tag 为基准，推导热修 / 下一功能线 / 大版本线 ×
+ * beta / rc / stable 三渠道候选，递增索引从 0 起）→ 收集上一个 tag 以来的提交（不分渠道，只写增量小节，互不重复；
  * 跨渠道的完整覆盖由推送渲染端的 range 拼装历史小节完成），按 changelog 类型分组，
  * 以 release-please 风格 prepend 进 `packages/core/CHANGELOG.md` → 提交
  * （只含 CHANGELOG）→ 打 v* tag。**推送交给人工**：审计后
@@ -22,14 +24,17 @@ import { changelogSections } from './changelog-types'
  * 「npm 包内的 CHANGELOG.md」和「tag v* 的 GitHub raw」竞速抓取，条目必须
  * 在打 tag 之前就进提交，tag 树里才看得到这一版。
  *
- * 版本不变式：main 的 packages/core/package.json 始终维持最近 stable 版本，
- * **本脚本完全不写 package.json**；prerelease 版本只存在于 tag 名与发布产物
- * ——release.yml 在发布时从 tag 注入。金丝雀版本号以「最近 stable tag 的下一个
+ * 版本不变式：main 的 packages/core/package.json 始终维持最近 stable 版本：
+ * stable 发布时由本脚本顺带把 version 钉到新 stable（进同一个 release commit）；
+ * prerelease 不写 package.json，版本只存在于 tag 名与发布产物——release.yml
+ * 在发布时从 tag 注入。金丝雀版本号以「最近 stable tag 的下一个
  * patch 号」为基准，beta/rc 的 tag 不参与基准（prerelease 之间不互追版本号）。
+ * 版本候选推导只信 stable tag：即使 package.json 意外滞后也不影响候选（仅作
+ * 仓库尚无 stable tag 时的兜底）。
  *
  * 版本线约定：不要在上一条版本线转正前开下一条 beta 线（例：2.45.0 尚未发布就打
  * 2.46.0-beta.1）—— main 是单列火车，2.46.0-beta.1 内容上包含 2.45.0-beta 的全部提交，
- * 交错编号会让 semver 与内容脱节，且 CHANGELOG 小节顺序不再匹配版本序。
+交错编号会让 semver 与内容脱节，且 CHANGELOG 小节顺序不再匹配版本序。脚本会在选择列表中把倒挂版本渲染为置灰禁用项，自定义输入则直接拒绝。
  *
  * 交互采用 @clack/prompts（bumpp 同款 UI 库），替代 bumpp：bumpp 的建议基于
  * 当前包版本（钉 stable 后永远不含 prerelease 线延续），无法感知 tag 线。
@@ -37,6 +42,7 @@ import { changelogSections } from './changelog-types'
 
 const REPO = 'ikenxuan/karin-plugin-kkk'
 const CHANGELOG = 'packages/core/CHANGELOG.md'
+const PKG_JSON = 'packages/core/package.json'
 
 const gitOut = (args: string[]): string => execFileSync('git', args, { encoding: 'utf-8' }).trim()
 
@@ -62,6 +68,23 @@ const lastPrereleaseTag = (): string => {
   return tags.split('\n')[0] ?? ''
 }
 
+/** 解析最近一个 stable tag（不带预发布后缀的 v* tag；无则返回空） */
+const lastStableTag = (): string => {
+  const tags = gitOut(['tag', '-l', 'v*', '--sort=-creatordate']).split('\n').filter(Boolean)
+  return tags.find((t) => !t.replace(/^v/, '').includes('-')) ?? ''
+}
+
+/**
+ * 单列火车守卫：检查版本倒挂 —— 返回第一个 semver 高于待发布版本的已发布 tag
+ * （如 rc.1 已发布后再倒发 beta.7）。存在倒挂时该版本不可发布：semver 判其低于
+ * 已发布版本，已装用户永远收不到它的推送，且 CHANGELOG 小节顺序与版本序脱节。
+ * 无倒挂返回空。
+ */
+const higherExistingTag = (version: string): string => {
+  const tags = gitOut(['tag', '-l', 'v*']).split('\n').filter(Boolean).map((t) => t.replace(/^v/, ''))
+  return tags.find((t) => isSemverGreater(t, version)) ?? ''
+}
+
 /** 选中版本的渠道 preid：无后缀 = ''（stable），-beta.N = beta，-rc.N = rc */
 const channelOf = (version: string): string =>
   version.replace(/^v/, '').split('-').slice(1).join('-').split('.')[0]
@@ -76,6 +99,22 @@ const bumpPrerelease = (tag: string): string => {
   const last = segs[segs.length - 1]
   segs[segs.length - 1] = /^\d+$/.test(last) ? String(Number(last) + 1) : `${last}.1`
   return `${core}-${segs.join('.')}`
+}
+
+/**
+ * 顶部徽标行：stable / rc / beta 三渠道当前已发布的最新版本（无 tag 显示 无）。
+ * 颜色走 chalk：自动感知 TTY / --no-color / FORCE_COLOR，无色环境输出纯文本。
+ */
+const channelBadges = (): string => {
+  const tags = gitOut(['tag', '-l', 'v*', '--sort=-creatordate']).split('\n').filter(Boolean)
+  const latestOf = (preid: string): string => tags.find((t) => channelOf(t) === preid)?.replace(/^v/, '') ?? ''
+  const slot = (label: string, value: string, style: (s: string) => string): string =>
+    `${chalk.dim(label)} ${value ? style(value) : chalk.dim('无')}`
+  return [
+    slot('stable', latestOf(''), chalk.bold.green),
+    slot('rc', latestOf('rc'), chalk.bold.yellow),
+    slot('beta', latestOf('beta'), chalk.bold.magenta)
+  ].join(chalk.dim(' ｜ '))
 }
 
 /** 收集上一版 tag 之后的常规提交（跳过 merge），解析 conventional 前缀 */
@@ -123,10 +162,10 @@ const renderEntry = (version: string, prevTag: string, entries: CommitEntry[]): 
  * 不写这条占位，推送图的版本区间会缺少 stable 锚点（range 的 endVersion 回退到
  * 预发布 tag），首屏标题将落在预发布版本上，与提示条的「最新版本」不一致。
  */
-const renderStablePlaceholder = (version: string, prevTag: string): string => {
+const renderStablePlaceholder = (version: string, prevTag: string, linkBase: string): string => {
   const date = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
-  const heading = prevTag
-    ? `## [${version}](https://github.com/${REPO}/compare/${prevTag}...v${version}) (${date})`
+  const heading = linkBase
+    ? `## [${version}](https://github.com/${REPO}/compare/${linkBase}...v${version}) (${date})`
     : `## ${version} (${date})`
   const since = prevTag ? `\`${prevTag.replace(/^v/, '')}\`` : '历史版本'
   return `${heading}\n\n> 本版本为测试/预览线的转正发布，自上一个 tag 以来没有新增常规提交。完整变更记录见 ${since} 及更早的各小节。`
@@ -145,6 +184,20 @@ const prependEntry = (entry: string): void => {
   const updated = idx === -1 ? raw + eol + entryText + eol : raw.slice(0, idx) + entryText + eol + eol + raw.slice(idx)
   writeFileSync(CHANGELOG, updated, 'utf-8')
   clack.log.step(`📝 已写入 ${CHANGELOG}（${eol === '\r\n' ? 'CRLF' : 'LF'}，插入位置：${idx === -1 ? '末尾' : '首个版本小节前'}）`)
+}
+
+/**
+ * stable 发布时把 package.json 的 version 钉到新 stable（字节级替换，不动其余格式）。
+ * prerelease 不调用：package.json 保持上一个 stable，prerelease 版本由 tag 携带。
+ */
+const pinPkgVersion = (version: string): void => {
+  const raw = readFileSync(PKG_JSON, 'utf-8')
+  if (!/("version"\s*:\s*")[^"]*"/.test(raw)) {
+    clack.log.error(`❌ 未能在 ${PKG_JSON} 中定位 version 字段，中止发版`)
+    process.exit(1)
+  }
+  writeFileSync(PKG_JSON, raw.replace(/("version"\s*:\s*")[^"]*(")/, `$1${version}$2`), 'utf-8')
+  clack.log.step(`📌 已把 ${PKG_JSON} 的 version 钉到 ${version}`)
 }
 
 // ── 入口 ─────────────────────────────────────────────────────────────────
@@ -179,51 +232,68 @@ if (!dry) {
 const prevTag = previousTag()
 const range = prevTag ? `${prevTag}..HEAD` : 'HEAD'
 
-// 发布前的提交清单（与 bumpp 同款：先给上下文，再选版本）
-const commitsList = gitOut(['log', range, '--no-merges', '--pretty=  %h  %s'])
+// 发布前的提交清单（与 bumpp 同款：先给上下文，再选版本）。
+// 缩进由 JS 侧补：gitOut 的 trim 会吃掉写在 --pretty 里的首行前导空格
+const commitsList = gitOut(['log', range, '--no-merges', '--pretty=%h  %s'])
 const commitCount = commitsList ? commitsList.split('\n').length : 0
 if (commitCount > 0) {
-  console.log(`\n${commitCount} Commits since the last version:\n${commitsList}\n`)
+  const indented = commitsList.split('\n').map((l) => `  ${l}`).join('\n')
+  console.log(`\n${commitCount} Commits since the last version:\n${indented}\n`)
 }
 
-// ── 版本选择：选项感知当前 prerelease 线 ─────────────────────────────────
+// ── 版本选择：以最近 stable tag 为基准，按版本线 × 渠道推导候选 ──────────
+// 基准只信 tag：package.json 靠人工维护，滞后于已发布 stable 时候选会整体倒挂，
+// 仅作仓库尚无 stable tag 时的兜底。递增索引从 0 起：新线首发 beta.0 / rc.0，
+// 已有 tag 的线取该渠道现有最大末段 +1（beta.0 已发 → 建议 beta.1）。
 const lastPre = lastPrereleaseTag()
-const pkgVersion = JSON.parse(readFileSync('packages/core/package.json', 'utf-8')).version as string
-const pkgStable = pkgVersion.split('-')[0]
-const [pkgMaj, pkgMin, pkgPat] = pkgStable.split('.').map(Number)
+const pkgStable = (JSON.parse(readFileSync(PKG_JSON, 'utf-8')).version as string).split('-')[0]
+const base = lastStableTag().replace(/^v/, '') || pkgStable
+const [maj, min, pat] = base.split('.').map(Number)
 
-type VersionOption = { value: string; label: string; hint?: string }
+type VersionOption = { value: string; label: string; hint?: string; disabled?: boolean }
 const opts: VersionOption[] = []
 const pushOpt = (value: string, hint: string): void => {
-  opts.push({ value, label: value, hint })
+  const blocker = higherExistingTag(value)
+  opts.push({
+    value,
+    label: value,
+    hint: blocker ? `❌ 版本倒挂：低于已发布的 v${blocker}` : hint,
+    disabled: Boolean(blocker)
+  })
 }
 
-if (lastPre) {
-  // 当前 prerelease 线：core + preid.seg（如 2.45.0-beta.1）
-  const [core, preFull] = lastPre.replace(/^v/, '').split('-')
-  const segs = preFull.split('.')
-  const preid = segs[0]
-  const seg = Number(segs[1] ?? 0)
-  const channelName: Record<string, string> = { beta: '测试渠道', rc: '预览渠道', canary: '金丝雀（仅展示）' }
-
-  pushOpt(`${core}-${preid}.${seg + 1}`, `继续${channelName[preid] ?? preid}（末段 +1）`)
-  if (preid === 'beta') pushOpt(`${core}-rc.1`, '晋升预览渠道（rc.1）')
-  pushOpt(core, '转正发布（正式渠道）')
+/** 某版本线某渠道的下一个 prerelease 版本：无 tag 从 .0 起，有则现有最大末段 +1 */
+const nextPre = (core: string, preid: string): string => {
+  const idxs = gitOut(['tag', '-l', `v${core}-${preid}.*`])
+    .split('\n').filter(Boolean)
+    .map((t) => Number(t.split('-')[1].split('.')[1]))
+    .filter(Number.isFinite)
+  return `${core}-${preid}.${Math.max(-1, ...idxs) + 1}`
 }
-pushOpt(`${pkgMaj}.${pkgMin}.${pkgPat + 1}`, '正式渠道热修（stable +1 patch）')
-pushOpt(`${pkgMaj}.${Number(pkgMin) + 1}.0-beta.1`, '开启下一功能线（测试渠道）')
-pushOpt(`${Number(pkgMaj) + 1}.0.0-beta.1`, '开启大版本线（测试渠道）')
+
+const lines: Array<[string, string]> = [
+  [`${maj}.${min}.${pat + 1}`, '热修线'],
+  [`${maj}.${min + 1}.0`, '下一功能线'],
+  [`${maj + 1}.0.0`, '大版本线']
+]
+for (const [i, [core, lineName]] of lines.entries()) {
+  // clack 无原生分隔线：用禁用伪选项模拟——SelectPrompt 的 findCursor 会跳过
+  // disabled 项，光标落不上、Enter 选不中，纯视觉分组
+  if (i > 0) opts.push({ value: `__divider_${i}__`, label: `── ${lineName} ──`, disabled: true })
+  for (const [preid, chName] of [['beta', '测试渠道'], ['rc', '预览渠道'], ['', '正式渠道']]) {
+    pushOpt(preid ? nextPre(core, preid) : core, `${lineName} · ${chName}`)
+  }
+}
 opts.push({ value: '__custom__', label: '自定义版本号…' })
 
-// value 去重（lastPre 的 core 与热修号可能撞车）
-const seen = new Set<string>()
-const options = opts.filter((o) => (seen.has(o.value) ? false : (seen.add(o.value), true)))
+const options = opts
 let version: string
 if (dry) {
   // dry：默认预览「上一 prerelease 线 +1」，可用 --to 覆盖
   version = dryTo || bumpPrerelease(lastPre || `v0.0.0`) || '0.0.1'
   console.log(`🧪 dry 模式：预览 ${version} 的 CHANGELOG 条目`)
 } else {
+  console.log(`\n当前渠道版本：${channelBadges()}\n`)
   const picked = await clack.select({
     message: '选择要发布的版本',
     options,
@@ -249,6 +319,12 @@ if (dry) {
     version = picked as string
   }
 
+  const blocker = higherExistingTag(version)
+  if (blocker) {
+    clack.log.error(`❌ 版本倒挂：v${version} 低于已发布的 v${blocker}。单列火车要求版本号单调递增，换一个版本号。`)
+    process.exit(1)
+  }
+
   if (gitOut(['tag', '-l', `v${version}`])) {
     clack.log.error(`❌ tag v${version} 已存在。换一个版本号。`)
     process.exit(1)
@@ -266,7 +342,11 @@ if (entries.length === 0 && channelOf(version) !== '') {
   process.exit(1)
 }
 
-const entry = entries.length > 0 ? renderEntry(version, prevTag, entries) : renderStablePlaceholder(version, prevTag)
+// compare 链接基准：stable（转正/热修）指向上一个 stable tag —— 转正链接代表整条
+// 版本线的完整差异；预发布保持上一个 tag（渠道内增量）。历史版本无 tag 时（如 2.44.1）
+// 做不了基准 —— GitHub compare 链接要求两个 ref 都存在，实际落到最近的 stable tag
+const linkBase = channelOf(version) === '' ? lastStableTag() || prevTag : prevTag
+const entry = entries.length > 0 ? renderEntry(version, linkBase, entries) : renderStablePlaceholder(version, prevTag, linkBase)
 console.log(`\n${entry.replaceAll('*', '•')}\n`)
 
 if (dry) {
@@ -285,8 +365,12 @@ if (clack.isCancel(proceed) || proceed === false) {
 prependEntry(entry)
 
 // ── 提交 + 打 tag ────────────────────────────────────────────────────────
-// 只提交 CHANGELOG：package.json 钉在 stable 不动（版本由 tag 携带、CI 注入）
+// stable 发布顺带把 package.json 钉到新 stable；prerelease 只提交 CHANGELOG，
+// package.json 保持上一个 stable（发布版本由 tag 携带、CI 注入）
+const isStable = channelOf(version) === ''
+if (isStable) pinPkgVersion(version)
 execFileSync('git', ['add', CHANGELOG], { stdio: 'inherit' })
+if (isStable) execFileSync('git', ['add', PKG_JSON], { stdio: 'inherit' })
 execFileSync('git', ['commit', '-m', `chore: release v${version}`], { stdio: 'inherit' })
 execFileSync('git', ['tag', `v${version}`], { stdio: 'inherit' })
 

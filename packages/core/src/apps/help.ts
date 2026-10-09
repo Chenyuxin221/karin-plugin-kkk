@@ -96,12 +96,6 @@ const HELP_MENU_CONFIG: RoleMenuGroup[] = [
     title: '设置相关',
     items: [
       {
-        title: '#kkk设置推送机器人 + Bot ID',
-        description: '一键更换推送机器人',
-        icon: 'ph:robot-fill',
-        roles: ['master']
-      },
-      {
         title: '#抖音登录',
         description: '使用抖音APP扫码登录获取 Cookies',
         icon: 'logos:tiktok-icon',
@@ -126,6 +120,12 @@ const HELP_MENU_CONFIG: RoleMenuGroup[] = [
         description: '查看插件、Karin、Node.js、适配器与系统资源等运行环境诊断信息',
         icon: 'ph:monitor-fill',
         roles: ['member', 'master']
+      },
+      {
+        title: '#kkk更新帮助',
+        description: '查看更新渠道面板：各渠道可用版本与更新用法一览',
+        icon: 'ph:rocket-launch-fill',
+        roles: ['master']
       },
       {
         title: '「#kkk更新日志」「#kkk更新」',
