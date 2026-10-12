@@ -2,6 +2,71 @@
 
 # Changelog
 
+## [2.45.1-beta.0](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0...v2.45.1-beta.0) (2026-10-08)
+
+
+### 🧰 其他更新
+
+* 优化发布脚本 ([a37069d](https://github.com/ikenxuan/karin-plugin-kkk/commit/a37069dd510b704d647f860606cccb8738547559))
+* 更新 package.json 版本至 2.45.0，并优化发布脚本以稳定版本钉住 ([9b2f89e](https://github.com/ikenxuan/karin-plugin-kkk/commit/9b2f89ee5995173bdaab1a110a37d0ff1b64aed0))
+
+
+### 💄 UI 优化
+
+* **web:** 优化网页配置订阅群组交互 ([7529a4e](https://github.com/ikenxuan/karin-plugin-kkk/commit/7529a4e802337ae1c266549afa31fbfc73edfbc4))
+
+## [2.45.0](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.44.0...v2.45.0) (2026-10-07)
+
+> 本版本为测试/预览线的转正发布，自上一个 tag 以来没有新增常规提交。完整变更记录见 `2.45.0-rc.4` 及更早的各小节。
+
+## [2.45.0-rc.4](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0-rc.3...v2.45.0-rc.4) (2026-10-07)
+
+
+### 🧰 其他更新
+
+* 补充 amagi 7.0.0-beta.8 的 lockfile 解析（与上一提交的 package.json 配套） ([c60d37f](https://github.com/ikenxuan/karin-plugin-kkk/commit/c60d37ff84ac17421a87120042065935ae036c26))
+
+
+### ♻️ 代码重构
+
+* 移除 #kkk设置推送机器人 命令，推送机器人更换已集成至 Web 面板 ([7ac8655](https://github.com/ikenxuan/karin-plugin-kkk/commit/7ac865561931de53672ce39f010faf9bd0365ed9))
+
+
+### 📦 依赖更新
+
+* update ([88db52a](https://github.com/ikenxuan/karin-plugin-kkk/commit/88db52a00ff9bb3ad36f8fc8b261ce6282ec8da5))
+
+## [2.45.0-rc.3](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0-rc.2...v2.45.0-rc.3) (2026-10-07)
+
+
+### ✨ 新功能
+
+* 推送配置新增 Bot 快捷切换，支持平台级与单个推送对象的可视化替换 ([c7d8810](https://github.com/ikenxuan/karin-plugin-kkk/commit/c7d8810063771e63d197e17e5ef27379ef0ecade))
+* 帮助菜单新增 #kkk更新帮助 入口 ([2ed7335](https://github.com/ikenxuan/karin-plugin-kkk/commit/2ed7335d40d2ecb79fb074e18befcc60b79dfa61))
+* 运行诊断海报重构为两栏参数面板，数值字号随内容自适应 ([300b7da](https://github.com/ikenxuan/karin-plugin-kkk/commit/300b7da08724feef0e2f6ee229e3ad8b08aa100b))
+
+
+### 🐛 错误修复
+
+* 注册帮助菜单缺失的图标并清理 lucide 弃用别名 ([85158dd](https://github.com/ikenxuan/karin-plugin-kkk/commit/85158ddc962c45a5c3b5085f9c4cc220995c7e7e))
+
+## [2.45.0-rc.2](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0-rc.1...v2.45.0-rc.2) (2026-10-07)
+
+
+### ✨ 新功能
+
+* 更新日志推送图按渠道裁剪引导，预发布角标区分测试版与预览版 ([16920a8](https://github.com/ikenxuan/karin-plugin-kkk/commit/16920a8dbfd720235bd1fa2de143a996b2808d65))
+
+
+### 🐛 错误修复
+
+* 发布脚本添加版本倒挂检查，确保版本号单调递增并更新渲染逻辑 ([64198f2](https://github.com/ikenxuan/karin-plugin-kkk/commit/64198f22db9a9c06bba38fbcf6f500e9071b0a71))
+
+
+### 💄 UI 优化
+
+* 更新面板金丝雀行改为直接展示构建 SHA ([121572a](https://github.com/ikenxuan/karin-plugin-kkk/commit/121572a16f8350242de0cdcd0b80b9ad366f1597))
+
 ## [2.45.0-rc.1](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0-beta.6...v2.45.0-rc.1) (2026-10-06)
 
 
