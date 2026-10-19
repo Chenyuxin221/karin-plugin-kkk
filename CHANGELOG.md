@@ -2,6 +2,47 @@
 
 # Changelog
 
+## [2.45.1](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0...v2.45.1) (2026-10-17)
+
+
+### 📦 依赖更新
+
+* update ([3435298](https://github.com/ikenxuan/karin-plugin-kkk/commit/343529868a87c0cc73cdbef2ffa31923f275d399))
+
+## [2.45.1-beta.4](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.1-beta.3...v2.45.1-beta.4) (2026-10-17)
+
+
+### 🧰 其他更新
+
+* 添加风控验证处理逻辑，支持失败重放与动态导入 ([ba32b48](https://github.com/ikenxuan/karin-plugin-kkk/commit/ba32b48aa3f79225439522756cc9e702543420d6))
+
+## [2.45.1-beta.3](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.1-beta.2...v2.45.1-beta.3) (2026-10-16)
+
+
+### ✨ 新功能
+
+* **xiaohongshu:** 添加子评论请求数量配置，支持动态拉取小红书子评论 ([39f96b4](https://github.com/ikenxuan/karin-plugin-kkk/commit/39f96b4ff4012c08d50ba1a0872d1e887c668a6c))
+
+## [2.45.1-beta.2](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.1-beta.1...v2.45.1-beta.2) (2026-10-15)
+
+
+### ✨ 新功能
+
+* 风控验证二维码模板与自动监听模块 ([dce1f12](https://github.com/ikenxuan/karin-plugin-kkk/commit/dce1f124636f25e9e12cda25e419776a341b2f3a))
+* 接入快手/小红书扫码登录与 B站登录态续期 ([269949c](https://github.com/ikenxuan/karin-plugin-kkk/commit/269949c8d0b39a7b4d87baf382fe003de55ae142))
+
+## [2.45.1-beta.1](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.1-beta.0...v2.45.1-beta.1) (2026-10-12)
+
+
+### 🧰 其他更新
+
+* 更新子项目 amagi 的提交 ID，优化小红书处理逻辑，调整视频流编码优先级 ([f764ca7](https://github.com/ikenxuan/karin-plugin-kkk/commit/f764ca7ade335101de0d095973123750d77c49e3))
+
+
+### 📦 依赖更新
+
+* 更新接口库，支持小红书免ck解析 ([fc730d9](https://github.com/ikenxuan/karin-plugin-kkk/commit/fc730d9676c9c8cea54fe75754bbe784f9998497))
+
 ## [2.45.1-beta.0](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0...v2.45.1-beta.0) (2026-10-08)
 
 
