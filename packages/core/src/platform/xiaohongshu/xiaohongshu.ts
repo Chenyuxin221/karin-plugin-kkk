@@ -82,9 +82,9 @@ export class Xiaohongshu extends Base {
   }
 
   async XiaohongshuHandler(data: XiaohongshuIdData) {
-    if (Config.amagi.cookies.xiaohongshu === '') {
-      throw new Error('我还没有小红书的 Cookies，暂时无法解析呢 ~')
-    }
+    // if (Config.amagi.cookies.xiaohongshu === '') {
+    //   throw new Error('我还没有小红书的 Cookies，暂时无法解析呢 ~')
+    // }
     if (Config.app.parseTip) {
       await this.e.reply('检测到小红书链接，开始解析')
     }
@@ -124,8 +124,11 @@ export class Xiaohongshu extends Base {
       if (!CommentData.data.comments || CommentData.data.comments.length === 0) {
         await this.e.reply('这个笔记没有评论 ~')
       } else {
-        // 使用简化的评论处理函数，直接返回评论数组
-        const processedComments = xiaohongshuComments(CommentData, formattedEmojis)
+        // 使用简化的评论处理函数，直接返回评论数组（配了 ck 且 subCommentLimit > 2 时会一并补齐子评论）
+        const processedComments = await xiaohongshuComments(CommentData, formattedEmojis, {
+          note_id: data.note_id,
+          xsec_token: data.xsec_token
+        })
 
         const commentListImg = await Render(this.e, 'xiaohongshu/comment', {
           Type: NoteData.data.data.items[0].note_card!.video ? '视频' : '图文',
@@ -179,6 +182,8 @@ export class Xiaohongshu extends Base {
 
           // 获取实况图视频流
           const livePhotoVideo = xiaohongshuGetLivePhotoVideo(item.stream)
+          /** 这条动图是否已产出至少一个待发送元素（视频 / 实况图 / 静态兜底） */
+          let hasPushedItem = false
 
           if (livePhotoVideo) {
             // 下载实况图视频
@@ -225,6 +230,7 @@ export class Xiaohongshu extends Base {
                       ? `base64://${fs.readFileSync(filePath).toString('base64')}`
                       : `file://${filePath}`
                   processedImages.push(segment.video(videoPath))
+                  hasPushedItem = true
                 }
               }
 
@@ -243,6 +249,7 @@ export class Xiaohongshu extends Base {
                     temp.push({ filepath: motionPhotoCoverPath, totalBytes: 0 })
                     const motionPhotoCover = processLocalImageFile(motionPhotoCoverPath)
                     processedImages.push(segment.image(motionPhotoCover))
+                    hasPushedItem = true
                     hasPushedMotionPhotoCover = true
                     hasGeneratedLivePhoto = true // 标记已生成实况图
                     logger.debug(`小红书实况图生成成功: ${motionPhotoCoverPath}`)
@@ -253,6 +260,7 @@ export class Xiaohongshu extends Base {
                 if (!hasPushedMotionPhotoCover) {
                   const imageUrl = await processImageUrl(item.url_default, title, index)
                   processedImages.push(segment.image(imageUrl))
+                  hasPushedItem = true
                 }
               }
 
@@ -260,6 +268,13 @@ export class Xiaohongshu extends Base {
               logger.mark('正在尝试删除缓存文件')
               await Common.removeFile(livePhoto.filepath, true)
             }
+          }
+
+          // 拿不到实况视频流（或视频生成失败且未生成实况图）时这条动图不会有任何产出，
+          // 用已下载的静态图兜底 —— 否则整条被静默丢弃，图集全是动图时会一条媒体消息都不发
+          if (!hasPushedItem) {
+            const fallbackImage = staticImgPath ? processLocalImageFile(staticImgPath) : await processImageUrl(item.url_default, title, index)
+            processedImages.push(segment.image(fallbackImage))
           }
 
           // 清理临时静态图片文件
@@ -302,6 +317,11 @@ export class Xiaohongshu extends Base {
           for (const item of temp) {
             await Common.removeFile(item.filepath, true)
           }
+        }
+      } else {
+        logger.warn(`小红书图集解析未生成可发送内容，note_id=${data.note_id}`)
+        for (const item of temp) {
+          await Common.removeFile(item.filepath, true)
         }
       }
     }
@@ -402,7 +422,7 @@ export const xiaohongshuProcessVideos = (streamData: unknown, videoQuality: stri
   }
 
   // 按兼容性优先级收集所有视频流：h265 > h264 > av1 > h266
-  const codecPriority = ['h265', 'h264', 'av1', 'h266']
+  const codecPriority = ['h265', 'h264', 'av1', 'h266', 'EF4', 'EF5', 'EF6', 'EF7']
   const allVideos: XhsVideoStream[] = []
 
   for (const codec of codecPriority) {
