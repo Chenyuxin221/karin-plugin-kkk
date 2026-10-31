@@ -41,6 +41,21 @@ import {
 } from '@/module/utils'
 import { bilibiliFetcher, isSoftFailure, SOFT_ERROR_CODES, softFetch } from '@/module/utils/amagiClient'
 import { Config } from '@/module/utils/Config'
+import { createEmojiReactionFlow, type EmojiReactionFlow, settleEmojiReaction } from '@/module/utils/EmojiReaction'
+import {
+  EPISODE_SELECTION_PAGE_SIZE,
+  EPISODE_SELECTION_TTL_SECONDS,
+  buildEpisodeSelectionReply,
+  canRecallEpisodeMessage,
+  consumeBilibiliEpisodeAutoSelect,
+  createEpisodeSelection,
+  getEpisodeSelectionScope,
+  isButtonSelectionScene,
+  markParseStatSkipped,
+  parseEpisodeNumber,
+  parseEpisodePosterPageAction,
+  setEpisodeSelectionMessage
+} from '@/module/utils/EpisodeSelection'
 import { logger } from '@/module/utils/logger'
 import { bilibiliComments, BilibiliId, checkCk, genParams } from '@/platform/bilibili'
 import { type BiliDanmakuElem, burnBiliDanmaku, getHotDanmaku, mergeAndBurnBili } from '@/platform/bilibili/danmaku'
@@ -55,6 +70,55 @@ import { BilibiliDataTypes } from '@/types'
 
 let img: ElementTypes[]
 type videoDownloadUrlList = BilibiliVideoStreamResponse['data']['dash']['video']
+
+/** 播放接口返回的流信息里，下载只需要直链和备用直链（兼容 snake_case / camelCase） */
+type BilibiliStreamUrls = {
+  base_url?: string
+  backup_url?: string[] | null
+  baseUrl?: string
+  backupUrl?: string[] | null
+}
+
+/**
+ * B站 PCDN 线路的域名特征。
+ * 这类域名常被代理/去广告规则的 hosts 指向 0.0.0.0，直接请求会 ECONNREFUSED。
+ */
+const BILIBILI_PCDN_HOST_RE = /(?:^|\.)(?:mcdn|pcdn)\.bilivideo\.(?:cn|com)$|(?:^|\.)szbdyd\.com$/i
+
+/** B站自有 CDN 域名，PCDN 之外的线路可作为稳定备选 */
+const BILIBILI_CDN_HOST_RE = /(?:^|\.)bilivideo\.(?:cn|com)$/i
+
+/** 取 URL 的 hostname，非法 URL 返回空串 */
+const getUrlHostname = (url: string) => {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return ''
+  }
+}
+
+/** 判断一条 B站直链是否走 PCDN 线路 */
+const isBilibiliPcdnUrl = (url: string) => BILIBILI_PCDN_HOST_RE.test(getUrlHostname(url))
+
+/** 判断一条 B站直链是否走 B站自有 CDN */
+const isBilibiliCdnUrl = (url: string) => BILIBILI_CDN_HOST_RE.test(getUrlHostname(url))
+
+/**
+ * 从播放接口返回的流信息里选一条可用直链。
+ *
+ * `base_url` 可能落在 PCDN 线路上，而 `backup_url` 里通常还有常规 CDN；
+ * 主直链不是 PCDN 时保持原行为，是 PCDN 时优先换到 B站自有 CDN 的备用直链，
+ * 全部不可用时退回 `base_url`。
+ */
+export const getBilibiliStreamUrl = (stream?: BilibiliStreamUrls | null): string | undefined => {
+  if (!stream) return undefined
+  const baseUrl = stream.base_url ?? stream.baseUrl
+  if (baseUrl && !isBilibiliPcdnUrl(baseUrl)) return baseUrl
+  const backups = (stream.backup_url ?? stream.backupUrl ?? []).filter((url): url is string => Boolean(url))
+  const officialBackup = backups.find((url) => isBilibiliCdnUrl(url) && !isBilibiliPcdnUrl(url))
+  const normalBackup = backups.find((url) => !isBilibiliPcdnUrl(url))
+  return officialBackup ?? normalBackup ?? baseUrl ?? backups[0]
+}
 
 /** 评论请求统一使用匿名态，避免账号 Cookie 改变评论热度池结果。 */
 const bilibiliAnonymousRequestConfig = {
@@ -211,7 +275,7 @@ export class Bilibili extends Base {
           /** 替换原始的视频信息对象 */
           playUrlData.data.data.dash.video = simplify
           /** 没有音频流（如纯视频稿件）时拿不到音频地址，按只统计视频流大小处理 */
-          const audioUrl = playUrlData.data.data.dash.audio?.[0]?.base_url
+          const audioUrl = getBilibiliStreamUrl(playUrlData.data.data.dash.audio?.[0])
           /** 给视频信息对象删除不符合条件的视频流 */
           correctList = await bilibiliProcessVideos(
             {
@@ -225,7 +289,7 @@ export class Bilibili extends Base {
           playUrlData.data.data.dash.video = correctList.videoList
           playUrlData.data.data.accept_description = correctList.accept_description
           /** 获取第一个视频流的大小 */
-          videoSize = await getvideosize(correctList.videoList[0].base_url, audioUrl, infoData.data.data.bvid)
+          videoSize = await getvideosize(getBilibiliStreamUrl(correctList.videoList[0])!, audioUrl, infoData.data.data.bvid)
         } else {
           videoSize = (nockData.data.durl[0].size / (1024 * 1024)).toFixed(2)
         }
@@ -331,9 +395,16 @@ export class Bilibili extends Base {
         this.islogin = (await checkCk()).Status === 'isLogin'
         this.isVIP = (await checkCk()).isVIP
 
-        const Episodes = []
-        for (const item of videoInfo.data.result.episodes) {
-          Episodes.push({
+        const sourceEpisodes = videoInfo.data.result.episodes ?? []
+        if (!sourceEpisodes.length) {
+          await this.e.reply('未获取到可解析的剧集，请稍后重试')
+          return true
+        }
+
+        // 接口按集数升序返回；海报和按钮都改成最新一集在前，分页才能从最新往前翻
+        const displayEpisodes = sourceEpisodes
+          .map((item, index) => ({
+            episode: index + 1,
             cover: item.cover,
             bvid: item.bvid,
             link: item.short_link,
@@ -341,88 +412,236 @@ export class Bilibili extends Base {
             pub_time: item.pub_time,
             badge: item.badge === '' ? '限免' : item.badge,
             badge_info: item.badge_info
+          }))
+          .reverse()
+        const episodeTargets = sourceEpisodes
+          .map((item, index) => ({
+            episode: index + 1,
+            target: { platform: 'bilibili' as const, epId: String(item.ep_id) }
+          }))
+          .reverse()
+
+        const autoSelectEpisode = consumeBilibiliEpisodeAutoSelect(this.e)
+        const linkedEpId = iddata.isEpid ? String(iddata.realid).replace(/^ep/i, '') : ''
+        const linkedSourceIndex = linkedEpId ? sourceEpisodes.findIndex((item) => String(item.ep_id) === linkedEpId) : -1
+        const linkedDisplayIndex = linkedSourceIndex >= 0 ? sourceEpisodes.length - 1 - linkedSourceIndex : -1
+        let selectedIndex = autoSelectEpisode ? linkedSourceIndex : -1
+        /** 文字选集消息的表情反馈流程：翻页留到新海报发出、选集留到下载结束后再收尾 */
+        let emojiFlow: EmojiReactionFlow | null = null
+        const buttonSelection = isButtonSelectionScene(this.e)
+        const selectionMode: 'text' | 'button' = buttonSelection ? 'button' : 'text'
+
+        /** 按海报页码渲染：15 集一页，长番剧不会撑爆单张 PNG */
+        const renderPoster = (posterPage: number) =>
+          Render(this.e, 'bilibili/bangumi', {
+            mainCover: videoInfo.data.result.cover,
+            Actors: videoInfo.data.result.actors,
+            Evaluate: videoInfo.data.result.evaluate,
+            Link: videoInfo.data.result.link,
+            newEP: videoInfo.data.result.new_ep,
+            Title: videoInfo.data.result.title,
+            Styles: videoInfo.data.result.styles,
+            seasonID: videoInfo.data.result.season_id,
+            subtitle: videoInfo.data.result.subtitle,
+            UPInfo: videoInfo.data.result.up_info,
+            Staff: videoInfo.data.result.staff,
+            Copyright: videoInfo.data.result.rights.copyright,
+            Stat: videoInfo.data.result.stat,
+            Episodes: displayEpisodes,
+            length: sourceEpisodes.length,
+            timeoutSeconds: EPISODE_SELECTION_TTL_SECONDS,
+            selectionMode,
+            posterPage,
+            posterPageSize: EPISODE_SELECTION_PAGE_SIZE
           })
-        }
-        img = await Render(this.e, 'bilibili/bangumi', {
-          mainCover: videoInfo.data.result.cover,
-          Actors: videoInfo.data.result.actors,
-          Evaluate: videoInfo.data.result.evaluate,
-          Link: videoInfo.data.result.link,
-          newEP: videoInfo.data.result.new_ep,
-          Title: videoInfo.data.result.title,
-          Styles: videoInfo.data.result.styles,
-          seasonID: videoInfo.data.result.season_id,
-          subtitle: videoInfo.data.result.subtitle,
-          UPInfo: videoInfo.data.result.up_info,
-          Copyright: videoInfo.data.result.rights.copyright,
-          Stat: videoInfo.data.result.stat,
-          Episodes,
-          length: videoInfo.data.result.episodes.length
-        })
-        this.e.reply([...img, segment.text('请在120秒内输入 第?集 选择集数')])
-        const context = await karin.ctx(this.e, { reply: true, throwOnTimeout: false })
-        if (!context) return true
-        const regex = /第([一二三四五六七八九十百千万0-9]+)集/.exec(context.msg)
-        let Episode
-        if (regex && regex[1]) {
-          Episode = regex[1]
-          // 检查是否为中文数字，如果是则转换为阿拉伯数字
-          if (/^[一二三四五六七八九十百千万]+$/.test(Episode)) {
-            Episode = Common.chineseToArabic(Episode).toString()
+
+        if (autoSelectEpisode) {
+          if (linkedSourceIndex < 0) {
+            await this.e.reply('未找到该集，请重新发送番剧链接')
+            return true
           }
-          this.downloadfilename = videoInfo.data.result.episodes[Number(Episode) - 1].share_copy
-            .substring(0, 50)
-            .replace(/[\\/:*?"<>|\r\n\s]/g, ' ')
-          this.e.reply(`收到请求，第${Episode}集\n${this.downloadfilename}\n正在下载中`)
-        } else {
-          logger.debug(Episode)
-          this.e.reply('匹配内容失败，请重新发送链接再次解析')
-          return true
-        }
-        const bangumidataBASEURL = bilibiliApiUrls.getBangumiStream({
-          cid: videoInfo.data.result.episodes[Number(Episode) - 1].cid,
-          ep_id: videoInfo.data.result.episodes[Number(Episode) - 1].ep_id.toString()
-        })
-        const Params = await genParams(bangumidataBASEURL)
-        if (!this.islogin) this.e.reply('B站ck未配置或已失效，无法获取视频流，可尝试【#B站登录】以配置新ck')
-        const playUrlData = await new Networks({
-          url: bangumidataBASEURL + Params,
-          headers: this.headers
-        }).getData()
-        if (videoInfo.data.result.episodes[Number(Episode) - 1].badge === '会员' && !this.isVIP) {
-          logger.warn('该CK不是大会员，无法获取视频流')
-          return true
-        }
-        if (Config.bilibili.videoQuality === 0) {
-          /** 提取出视频流信息对象，并排除清晰度重复的视频流 */
-          const simplify = playUrlData.result.dash.video.filter((item: { id: number }, index: any, self: any[]) => {
-            return (
-              self.findIndex((t: { id: any }) => {
-                return t.id === item.id
-              }) === index
-            )
+        } else if (buttonSelection) {
+          // 海报和按钮共用 15 集一页的页码，链接指向哪一集就落在哪一页
+          const initialPage = linkedDisplayIndex >= 0 ? Math.floor(linkedDisplayIndex / EPISODE_SELECTION_PAGE_SIZE) + 1 : 1
+          const poster = await renderPoster(initialPage)
+          const session = createEpisodeSelection(getEpisodeSelectionScope(this.e), {
+            title: videoInfo.data.result.title,
+            platform: 'bilibili',
+            scene: this.e.isFriend ? 'friend' : 'group',
+            ownerId: this.e.userId,
+            poster,
+            posterPage: initialPage,
+            renderPoster,
+            episodes: episodeTargets,
+            forceBurnDanmaku: this.forceBurnDanmaku
           })
-          /** 替换原始的视频信息对象 */
-          playUrlData.result.dash.video = simplify
-          /** 给视频信息对象删除不符合条件的视频流 */
-          const correctList = await bilibiliProcessVideos(
-            {
-              accept_description: playUrlData.result.accept_description,
-              bvid: videoInfo.data.result.season_id.toString(),
-              qn: Config.bilibili.videoQuality
-            },
-            simplify,
-            playUrlData.result.dash.audio?.[0]?.base_url
-          )
-          playUrlData.result.dash.video = correctList.videoList
-          playUrlData.result.cept_description = correctList.accept_description
+          markParseStatSkipped(this.e)
+          const sentAt = Date.now()
+          const result = await this.e.reply(buildEpisodeSelectionReply(session, initialPage, poster))
+          setEpisodeSelectionMessage(session, result.messageId, sentAt)
+          return true
+        } else {
+          const posterPageCount = Math.ceil(displayEpisodes.length / EPISODE_SELECTION_PAGE_SIZE)
+          let posterPage = linkedDisplayIndex >= 0 ? Math.floor(linkedDisplayIndex / EPISODE_SELECTION_PAGE_SIZE) + 1 : 1
+          /** 上一页海报消息，翻页发送成功后撤回，避免聊天里堆一串过期海报 */
+          let posterMessageId = ''
+          let posterMessageSentAt = 0
+
+          try {
+            for (;;) {
+              const poster = await renderPoster(posterPage)
+              const start = (posterPage - 1) * EPISODE_SELECTION_PAGE_SIZE
+              const pageEpisodes = displayEpisodes.slice(start, start + EPISODE_SELECTION_PAGE_SIZE)
+              const firstEpisode = pageEpisodes[0]?.episode ?? 0
+              const lastEpisode = pageEpisodes[pageEpisodes.length - 1]?.episode ?? 0
+              const range = firstEpisode === lastEpisode ? `第 ${firstEpisode} 集` : `第 ${firstEpisode}–${lastEpisode} 集`
+
+              const sentAt = Date.now()
+              const result = await this.e.reply([
+                ...poster,
+                segment.text(
+                  `《${videoInfo.data.result.title}》\n${range}（共 ${displayEpisodes.length} 集）\n第 ${posterPage}/${posterPageCount} 页\n` +
+                    `发送 第?集 选集${posterPageCount > 1 ? '，发送 上一页 / 下一页 / 第?页 翻页' : ''}（${EPISODE_SELECTION_TTL_SECONDS} 秒内有效）`
+                )
+              ])
+
+              // 上一轮翻页的新海报已经发出，那条消息才算处理完成
+              if (emojiFlow) {
+                await emojiFlow.succeed()
+                // 这一轮子上下文处理完了，父消息（原链接）的 ⏳ 也收尾
+                void settleEmojiReaction(this.e)
+                emojiFlow = null
+              }
+
+              const previousMessageId = posterMessageId
+              const previousMessageSentAt = posterMessageSentAt
+              posterMessageId = result.messageId
+              posterMessageSentAt = result.messageId ? sentAt : 0
+              if (previousMessageId && canRecallEpisodeMessage(previousMessageId, previousMessageSentAt)) {
+                try {
+                  await this.e.bot.recallMsg(this.e.contact, previousMessageId)
+                } catch (error) {
+                  logger.debug('[选集] 撤回上一页失败:', error)
+                }
+              }
+
+              // karin.ctx 按联系人 + 用户 ID 绑定监听，只有发起人的回复会唤醒
+              const context = await karin.ctx(this.e, { reply: true, throwOnTimeout: false, time: EPISODE_SELECTION_TTL_SECONDS })
+              if (!context) return true
+
+              // 用户发了新链接/新命令：结束本轮选集，交给对应处理器，避免两个等待上下文抢同一条消息
+              const replyText = context.msg.trim()
+              if (/^[#/]/.test(replyText) || /(https?:\/\/|b23\.tv|bilibili\.com|douyin\.com|iesdouyin\.com)/i.test(replyText)) {
+                return true
+              }
+
+              // 子上下文消息不经过错误处理器，单独接一套表情反馈：👀 → ⏳ → ✅/❌
+              emojiFlow = createEmojiReactionFlow(context)
+              await emojiFlow.begin()
+
+              const pageAction = parseEpisodePosterPageAction(context.msg)
+              if (pageAction) {
+                const nextPage = pageAction.type === 'prev' ? posterPage - 1 : pageAction.type === 'next' ? posterPage + 1 : pageAction.page
+                if (nextPage < 1 || nextPage > posterPageCount) {
+                  await this.e.reply(`页码超出范围，请发送 1-${posterPageCount} 之间的页码`)
+                  await emojiFlow.fail()
+                  void settleEmojiReaction(this.e)
+                  emojiFlow = null
+                  continue
+                }
+                // 新海报在下一轮发出后再把这条消息算成功
+                posterPage = nextPage
+                continue
+              }
+
+              const parsedEpisode = parseEpisodeNumber(context.msg)
+              if (parsedEpisode === null || parsedEpisode > sourceEpisodes.length) {
+                await this.e.reply(
+                  parsedEpisode === null
+                    ? '匹配内容失败，请发送 第?集 选择集数，或发送 上一页 / 下一页 / 第?页 翻页'
+                    : `第${parsedEpisode}集不在可解析的剧集里，请重新选择`
+                )
+                await emojiFlow.fail()
+                void settleEmojiReaction(this.e)
+                emojiFlow = null
+                continue
+              }
+              selectedIndex = parsedEpisode - 1
+              // 这条消息留到下载结束后再收尾
+              break
+            }
+          } catch (error) {
+            // 子上下文消息不经过错误处理器，异常路径也要给它一个结果表情
+            if (emojiFlow) await emojiFlow.fail()
+            throw error
+          }
         }
-        await this.getvideo({
-          infoData: videoInfo.data,
-          playUrlData
-        })
+
+        const episodeInfo = sourceEpisodes[selectedIndex]
+        try {
+          if (!episodeInfo) {
+            await this.e.reply('未找到该集，请重新发送番剧链接')
+            if (emojiFlow) await emojiFlow.fail()
+            await settleEmojiReaction(this.e, 'ERROR')
+            return true
+          }
+          const displayEpisode = selectedIndex + 1
+          this.downloadfilename = episodeInfo.share_copy.substring(0, 50).replace(/[\\/:*?"<>|\r\n\s]/g, ' ')
+          await this.e.reply(`收到请求，第${displayEpisode}集\n${this.downloadfilename}\n正在下载中`)
+
+          const bangumidataBASEURL = bilibiliApiUrls.getBangumiStream({
+            cid: episodeInfo.cid,
+            ep_id: episodeInfo.ep_id.toString()
+          })
+          const Params = await genParams(bangumidataBASEURL)
+          if (!this.islogin) await this.e.reply('B站ck未配置或已失效，无法获取视频流，可尝试【#B站登录】以配置新ck')
+          const playUrlData = await new Networks({
+            url: bangumidataBASEURL + Params,
+            headers: this.headers
+          }).getData()
+          if (episodeInfo.badge === '会员' && !this.isVIP) {
+            logger.warn('该CK不是大会员，无法获取视频流')
+            if (emojiFlow) await emojiFlow.fail()
+            await settleEmojiReaction(this.e, 'ERROR')
+            return true
+          }
+          if (Config.bilibili.videoQuality === 0) {
+            /** 提取出视频流信息对象，并排除清晰度重复的视频流 */
+            const simplify = playUrlData.result.dash.video.filter((item: { id: number }, index: any, self: any[]) => {
+              return (
+                self.findIndex((t: { id: any }) => {
+                  return t.id === item.id
+                }) === index
+              )
+            })
+            /** 替换原始的视频信息对象 */
+            playUrlData.result.dash.video = simplify
+            /** 给视频信息对象删除不符合条件的视频流 */
+            const correctList = await bilibiliProcessVideos(
+              {
+                accept_description: playUrlData.result.accept_description,
+                bvid: videoInfo.data.result.season_id.toString(),
+                qn: Config.bilibili.videoQuality
+              },
+              simplify,
+              getBilibiliStreamUrl(playUrlData.result.dash.audio?.[0])
+            )
+            playUrlData.result.dash.video = correctList.videoList
+            playUrlData.result.cept_description = correctList.accept_description
+          }
+          await this.getvideo({
+            infoData: videoInfo.data,
+            playUrlData
+          })
+          // 下载完成，这条选集消息才算处理成功
+          if (emojiFlow) await emojiFlow.succeed()
+        } catch (error) {
+          if (emojiFlow) await emojiFlow.fail()
+          throw error
+        }
         break
       }
+
       case 'dynamic_info': {
         const dynamicInfo = await this.amagi.bilibili.fetcher.fetchDynamicDetail({
           dynamic_id: iddata.dynamic_id
@@ -1170,7 +1389,9 @@ export class Bilibili extends Base {
       case true: {
         logger.debug(
           '视频 URL:',
-          this.Type === 'one_video' ? playUrlData.data?.dash?.video[0].base_url : playUrlData.result.dash.video[0].base_url
+          this.Type === 'one_video'
+            ? getBilibiliStreamUrl(playUrlData.data?.dash?.video[0])
+            : getBilibiliStreamUrl(playUrlData.result.dash.video[0])
         )
 
         // B站 CDN 需要正确的 Referer
@@ -1179,13 +1400,14 @@ export class Bilibili extends Base {
           Referer: 'https://www.bilibili.com'
         }
 
-        const bmp4Raw = await downloadFile(
-          this.Type === 'one_video' ? playUrlData.data?.dash?.video[0].base_url : playUrlData.result.dash.video[0].base_url,
-          {
-            title: `Bil_V_${this.Type === 'one_video' ? infoData && infoData.data.bvid : infoData && infoData.result.season_id}.m4s`,
-            headers: downloadHeaders
-          }
-        )
+        const videoUrl =
+          this.Type === 'one_video'
+            ? getBilibiliStreamUrl(playUrlData.data?.dash?.video[0])
+            : getBilibiliStreamUrl(playUrlData.result.dash.video[0])
+        const bmp4Raw = await downloadFile(videoUrl!, {
+          title: `Bil_V_${this.Type === 'one_video' ? infoData && infoData.data.bvid : infoData && infoData.result.season_id}.m4s`,
+          headers: downloadHeaders
+        })
 
         // 修复 m4s 文件为标准 MP4
         const videoPath =
@@ -1200,7 +1422,9 @@ export class Bilibili extends Base {
         await Common.removeFile(bmp4Raw.filepath, true)
 
         const audioUrl =
-          this.Type === 'one_video' ? playUrlData.data?.dash?.audio?.[0]?.base_url : playUrlData.result.dash.audio?.[0]?.base_url
+          this.Type === 'one_video'
+            ? getBilibiliStreamUrl(playUrlData.data?.dash?.audio?.[0])
+            : getBilibiliStreamUrl(playUrlData.result.dash.audio?.[0])
         logger.debug('音频 URL:', audioUrl)
 
         /** 没有音频流（如纯视频稿件）时为 undefined，此时无从合成，直接发视频流 */
@@ -1652,7 +1876,7 @@ export const bilibiliProcessVideos = async (
   const results: Record<string, string> = {}
 
   for (const video of videoList) {
-    const size = await getvideosize(video.base_url, audioUrl, qualityOptions.bvid)
+    const size = await getvideosize(getBilibiliStreamUrl(video)!, audioUrl, qualityOptions.bvid)
     results[video.id] = size
   }
 

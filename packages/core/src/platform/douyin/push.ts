@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 
-import type { DouyinSearchResponse } from '@ikenxuan/amagi'
+import type { DouyinGuestUserInfoResponse } from '@ikenxuan/amagi'
 import type { DouyinUserListData } from '@template/template/douyin/userlist/components/types'
 import { format } from 'date-fns'
 import type { AdapterType, Elements, ImageElement, Message } from 'node-karin'
@@ -38,6 +38,7 @@ import { processPostList } from './push/post'
 import { processRecommendList } from './push/recommend'
 import { renderFavoriteImage, renderLiveImage, renderRecommendImage, renderWorkImage } from './push/render'
 import { type DouyinPushItem, type DouyinWorkPushItem, type WillBePushList } from './push/types'
+import { toDouyinShortUrl } from './shortUrl'
 
 // Re-export types for backward compatibility
 export type { DouyinPushItem, DouyinWorkPushItem }
@@ -287,7 +288,7 @@ export class DouYinpush extends Base {
           if (workTypeInfo.isArticle) {
             workShareLink = `https://www.douyin.com/article/${actualAwemeId}`
           } else if (workTypeInfo.isImage) {
-            // 图文和合辑使用无追踪参数的短链接，降低二维码密度并提高扫描识别率。
+            // 图文和合辑使用无追踪参数的规范链接，降低二维码密度并提高扫描识别率。
             workShareLink = `https://www.douyin.com/note/${actualAwemeId}`
           } else if (Config.douyin.push.shareType === 'web') {
             // 视频同样用无追踪参数的规范链接：share_url 302 之后只是多出一串追踪参数，白搭一次网络请求还会拉高二维码密度
@@ -297,6 +298,8 @@ export class DouYinpush extends Base {
             const playAddr = selectedVideo?.play_addr ?? pushItem.Detail_Data.video?.play_addr
             workShareLink = playAddr ? buildDouyinPlayUrl(playAddr) : `https://www.douyin.com/video/${actualAwemeId}`
           }
+          // 二维码统一换成抖音签发的短链；签发失败时 helper 回退原链接
+          workShareLink = await toDouyinShortUrl(workShareLink)
         }
 
         switch (pushItem.pushType) {
@@ -935,7 +938,7 @@ export class DouYinpush extends Base {
    * @param data 抖音的搜索结果数据。需要接口返回的原始数据
    * @returns 操作成功或失败的消息字符串。
    */
-  async setting(data: DouyinSearchResponse): Promise<void> {
+  async setting(data: DouyinGuestUserInfoResponse): Promise<void> {
     const groupInfo = await this.e.bot.getGroupInfo('groupId' in this.e && this.e.groupId ? this.e.groupId : '')
     const config = Config.pushlist // 读取配置文件
     const groupId = 'groupId' in this.e && this.e.groupId ? this.e.groupId : ''
@@ -945,37 +948,16 @@ export class DouYinpush extends Base {
       // 获取用户输入的抖音号
       const inputDouyinId = this.e.msg.replace(/^#设置抖音推送/, '').trim()
 
-      /**
-       * 搜索结果按响应形态自述（判别式 `__search_type`，由 amagi 的 normalize 按响应结构 +
-       * 请求类型写入）。订阅只认「用户搜索」那一支：抖音把 user 请求回成别的形态时在这里说清楚，
-       * 而不是拿一个 undefined 去遍历。
-       */
-      if (data.__search_type !== 'user') {
-        throw new Error(`抖音没有返回用户搜索结果（返回形态：${data.__search_type ?? '未知'}）`)
-      }
+      /** 处理抖音号 */
+      const user_shortid = data.user_info.unique_id === '' ? data.user_info.short_id : data.user_info.unique_id
 
       // 在用户列表中查找匹配的用户
-      let matchedUser = null
-      for (const userItem of data.user_list) {
-        const currentDouyinId = userItem.user_info.unique_id === '' ? userItem.user_info.short_id : userItem.user_info.unique_id
-        if (currentDouyinId === inputDouyinId) {
-          matchedUser = userItem.user_info
-          break
-        }
-      }
+      const sec_uid = data.user_info.sec_uid
 
       // 如果没找到匹配的用户，抛出错误
-      if (!matchedUser) {
+      if (inputDouyinId !== user_shortid) {
         throw new Error(`未找到抖音号为 ${inputDouyinId} 的用户`)
       }
-
-      // 使用匹配到的用户的 sec_uid 进行下一步请求
-      const sec_uid = matchedUser.sec_uid
-      const UserInfoData = await this.amagi.douyin.fetcher.fetchUserProfile({ sec_uid })
-
-      /** 处理抖音号 */
-      let user_shortid
-      user_shortid = UserInfoData.data.user.unique_id === '' ? UserInfoData.data.user.short_id : UserInfoData.data.user.unique_id
 
       // 初始化 douyin 数组
       config.douyin ??= []
@@ -1020,10 +1002,8 @@ export class DouYinpush extends Base {
 
           // 保存配置到文件
           Config.Modify('pushlist', 'douyin', config.douyin)
-          await this.e.reply(
-            `群：${groupInfo.groupName}(${groupId})\n删除成功！${UserInfoData.data.user.nickname}\n抖音号：${user_shortid}`
-          )
-          logger.info(`\n删除成功！${UserInfoData.data.user.nickname}\n抖音号：${user_shortid}\nsec_uid${UserInfoData.data.user.sec_uid}`)
+          await this.e.reply(`群：${groupInfo.groupName}(${groupId})\n删除成功！${data.user_info.nickname}\n抖音号：${user_shortid}`)
+          logger.info(`\n删除成功！${data.user_info.nickname}\n抖音号：${user_shortid}\nsec_uid${data.user_info.sec_uid}`)
         } else {
           // 否则，将新的 group_id 添加到该 sec_uid 对应的数组中
           existingItem.group_id.push(`${groupId}:${botId}`)
@@ -1035,16 +1015,14 @@ export class DouYinpush extends Base {
 
           // 同时在数据库中添加订阅
           if (!isSubscribed) {
-            await douyinDB.subscribeDouyinUser(groupId, botId, sec_uid, user_shortid, UserInfoData.data.user.nickname)
+            await douyinDB.subscribeDouyinUser(groupId, botId, sec_uid, user_shortid, data.user_info.nickname)
           }
 
           // 保存配置到文件
           Config.Modify('pushlist', 'douyin', config.douyin)
-          await this.e.reply(
-            `群：${groupInfo.groupName}(${groupId})\n添加成功！${UserInfoData.data.user.nickname}\n抖音号：${user_shortid}`
-          )
+          await this.e.reply(`群：${groupInfo.groupName}(${groupId})\n添加成功！${data.user_info.nickname}\n抖音号：${user_shortid}`)
           if (Config.douyin.push.switch === false) await this.e.reply('请发送「#设置抖音推送开启」以进行推送')
-          logger.info(`\n设置成功！${UserInfoData.data.user.nickname}\n抖音号：${user_shortid}\nsec_uid${UserInfoData.data.user.sec_uid}`)
+          logger.info(`\n设置成功！${data.user_info.nickname}\n抖音号：${user_shortid}\nsec_uid${data.user_info.sec_uid}`)
         }
       } else {
         // 如果不存在相同的 sec_uid，则新增一个属性
@@ -1052,21 +1030,21 @@ export class DouYinpush extends Base {
           switch: true,
           sec_uid,
           group_id: [`${groupId}:${botId}`],
-          remark: UserInfoData.data.user.nickname,
+          remark: data.user_info.nickname,
           short_id: user_shortid,
           pushTypes: ['post', 'live']
         })
 
         // 同时在数据库中添加订阅
         if (!isSubscribed) {
-          await douyinDB.subscribeDouyinUser(groupId, botId, sec_uid, user_shortid, UserInfoData.data.user.nickname)
+          await douyinDB.subscribeDouyinUser(groupId, botId, sec_uid, user_shortid, data.user_info.nickname)
         }
 
         // 保存配置到文件
         Config.Modify('pushlist', 'douyin', config.douyin)
-        await this.e.reply(`群：${groupInfo.groupName}(${groupId})\n添加成功！${UserInfoData.data.user.nickname}\n抖音号：${user_shortid}`)
+        await this.e.reply(`群：${groupInfo.groupName}(${groupId})\n添加成功！${data.user_info.nickname}\n抖音号：${user_shortid}`)
         if (Config.douyin.push.switch === false) await this.e.reply('请发送「#设置抖音推送开启」以进行推送')
-        logger.info(`\n设置成功！${UserInfoData.data.user.nickname}\n抖音号：${user_shortid}\nsec_uid${UserInfoData.data.user.sec_uid}`)
+        logger.info(`\n设置成功！${data.user_info.nickname}\n抖音号：${user_shortid}\nsec_uid${data.user_info.sec_uid}`)
       }
 
       await this.renderPushList()

@@ -25,10 +25,24 @@ import {
   uploadFile
 } from '@/module/utils'
 import { Config } from '@/module/utils/Config'
-import { EmojiReactionManager, getEmojiId } from '@/module/utils/EmojiReaction'
+import { createEmojiReactionFlow, type EmojiReactionFlow, settleEmojiReaction } from '@/module/utils/EmojiReaction'
+import {
+  EPISODE_SELECTION_PAGE_SIZE,
+  EPISODE_SELECTION_TTL_SECONDS,
+  buildEpisodeSelectionReply,
+  canRecallEpisodeMessage,
+  createEpisodeSelection,
+  getEpisodeSelectionScope,
+  isButtonSelectionScene,
+  markParseStatSkipped,
+  parseEpisodeNumber,
+  parseEpisodePosterPageAction,
+  setEpisodeSelectionMessage
+} from '@/module/utils/EpisodeSelection'
 import { douyinComments } from '@/platform/douyin'
 import { burnDouyinDanmaku, type DouyinDanmakuElem } from '@/platform/douyin/danmaku'
 import { renderWorkImage } from '@/platform/douyin/push/render'
+import { toDouyinShortUrl } from '@/platform/douyin/shortUrl'
 import { buildDouyinWorkDetail } from '@/platform/douyin/types'
 import { douyinProcessVideos, type dyVideo, buildDouyinPlayUrl } from '@/platform/douyin/videoQuality'
 import { getDouyinLiveImageSendPolicy } from '@/platform/douyin/workType'
@@ -80,13 +94,13 @@ export class DouYin extends Base {
 
         /**
          * 根据 aweme_type 判断作品类型
-         * - `0`、`4`、`55`：视频作品；`4` 是剧集合集
+         * - `0`、`4`、`55`、`61`：视频作品；`4` 是剧集合集
          * - `163`：文章作品
          * - `68`：图文作品（含图集、合辑等）
          */
         const aweme_type = VideoData.data.aweme_detail.aweme_type
         const isArticle = aweme_type === 163
-        const isVideo = aweme_type === 0 || aweme_type === 4 || aweme_type === 55
+        const isVideo = aweme_type === 0 || aweme_type === 4 || aweme_type === 55 || aweme_type === 61
 
         const CommentsData = await this.amagi.douyin.fetcher.fetchWorkComments({
           aweme_id: data.aweme_id,
@@ -603,11 +617,13 @@ export class DouYin extends Base {
             const userProfile = await this.amagi.douyin.fetcher.fetchUserProfile({
               sec_uid: aweme.author.sec_uid
             })
-            // 非视频作品使用不带追踪参数的规范短链接，避免二维码内容过长影响扫描识别。
-            const shareLink =
+            // 作品详情二维码统一用抖音签发的短链：视频作品用选档后的下载直链、
+            // 图文/文章用规范网页链接，先签发短链再交给 ktr 渲染；签发失败回退原链接。
+            const shareLink = await toDouyinShortUrl(
               isVideo && selectedVideo
                 ? buildDouyinPlayUrl(selectedVideo.play_addr)
                 : `https://www.douyin.com/${isArticle ? 'article' : 'note'}/${aweme.aweme_id}`
+            )
             const workInfoImg = await renderWorkImage({
               e: this.e,
               // 不再向 Detail_Data 里覆盖 video.bit_rate 塞入选档结果：
@@ -647,9 +663,13 @@ export class DouYin extends Base {
               Type: isArticle ? '文章' : isVideo ? '视频' : this.is_slides ? '合辑' : '图集',
               CommentsData: douyinCommentsRes.CommentsData,
               CommentLength: douyinCommentsRes.CommentsData.length ?? 0,
-              // 非视频作品没有直链，二维码用 www.douyin.com 的 PC 访问地址；
-              // iesdouyin 超长分享链接字节过多，会降低二维码的鲁棒性。
-              share_url: isVideo && selectedVideo ? buildDouyinPlayUrl(selectedVideo.play_addr) : `https://www.douyin.com/${isArticle ? 'article' : 'note'}/${aweme.aweme_id}`,
+              // 评论图二维码同样用抖音签发的短链：视频用选档后的下载直链、
+              // 图文/文章用规范网页链接；签发失败回退原链接。
+              share_url: await toDouyinShortUrl(
+                isVideo && selectedVideo
+                  ? buildDouyinPlayUrl(selectedVideo.play_addr)
+                  : `https://www.douyin.com/${isArticle ? 'article' : 'note'}/${aweme.aweme_id}`
+              ),
               VideoSize: mp4size,
               VideoFPS: FPS,
               ImageLength: imagenum,
@@ -844,14 +864,8 @@ export class DouYin extends Base {
         if (context) {
           const num = parseInt(context.msg.trim())
           if (!isNaN(num) && num >= 1 && num <= displayVideos.length) {
-            const emojiManager = new EmojiReactionManager(context)
-            let processingTimer: NodeJS.Timeout | null = null
-            let successTimer: NodeJS.Timeout | null = null
-
-            await emojiManager.add('EYES')
-            processingTimer = setTimeout(() => {
-              emojiManager.add('PROCESSING').catch(() => {})
-            }, 1500)
+            const emojiFlow = createEmojiReactionFlow(context)
+            await emojiFlow.begin()
 
             try {
               const target = displayVideos[num - 1]
@@ -861,24 +875,207 @@ export class DouYin extends Base {
               }
               const dy = new DouYin(context, targetData)
               await dy.DouyinHandler(targetData)
-
-              successTimer = setTimeout(() => {
-                emojiManager.replace('PROCESSING', 'SUCCESS').catch(() => {})
-              }, 1500)
+              await emojiFlow.succeed()
             } catch (error) {
-              if (processingTimer) clearTimeout(processingTimer)
-              if (successTimer) clearTimeout(successTimer)
-
-              const processingEmojiId = getEmojiId(context, 'PROCESSING')
-              if (emojiManager.has(processingEmojiId)) {
-                await emojiManager.remove('PROCESSING')
-              }
-              await emojiManager.add('ERROR')
+              await emojiFlow.fail()
               throw error
             }
           }
         }
         return true
+      }
+      case 'mix_work': {
+        // 合集和 B站番剧是同一种「先选集再解析」的形态，统计口径沿用番剧
+        this.workType = 'bangumi'
+        /** 单次最多拉取的集数，超出部分不展示 */
+        const episodeLimit = 200
+        const timeoutSeconds = EPISODE_SELECTION_TTL_SECONDS
+        const MixData = await this.amagi.douyin.fetcher.fetchMixAweme({ mix_id: data.mix_id, number: episodeLimit })
+        const awemeList = MixData.data.aweme_list
+        const first = awemeList[0]
+        if (!first) {
+          throw new Error('获取合集作品列表失败，可能是因为该合集已被删除或设置为私密。')
+        }
+        const mixInfo = first.mix_info
+        const author = first.author
+        // 只有短剧带计划总集数 total_episode，普通合集只有 updated_to_episode
+        const isPlaylet = typeof mixInfo.statis.total_episode === 'number'
+        const totalEpisode = isPlaylet ? mixInfo.statis.total_episode : mixInfo.statis.updated_to_episode
+        const episodes = awemeList.map((aweme) => ({
+          episode: aweme.mix_info.statis.current_episode,
+          aweme_id: aweme.aweme_id,
+          // 末尾的话题标签对选集没用
+          title: aweme.desc.replace(/#\S+/g, '').trim(),
+          duration: aweme.video.duration,
+          cover: aweme.video.cover?.url_list?.[0] ?? '',
+          originCover: aweme.video.origin_cover?.url_list?.[0] ?? ''
+        }))
+        // 最新一集在前，和 B 站番剧一致；翻页时上一页往更新的方向翻
+        const displayEpisodes = [...episodes].sort((a, b) => b.episode - a.episode)
+
+        const buttonSelection = isButtonSelectionScene(this.e)
+        const selectionMode: 'text' | 'button' = buttonSelection ? 'button' : 'text'
+
+        /** 按海报页码渲染：15 集一页，长合集不会撑爆单张 PNG */
+        const renderPoster = (posterPage: number) =>
+          Render(this.e, 'douyin/mix', {
+            kind: isPlaylet ? 'playlet' : 'collection',
+            mix_name: mixInfo.mix_name,
+            image_url: mixInfo.cover_url.url_list[0],
+            // 短剧每集文案都是同一段剧情简介；普通合集每集文案就是各自的标题，没有合集级简介
+            desc: isPlaylet ? (displayEpisodes[0]?.title ?? '') : '',
+            total_episode: totalEpisode,
+            updated_to_episode: mixInfo.statis.updated_to_episode,
+            author: {
+              nickname: author.nickname,
+              avatar: author.avatar_thumb.url_list[0],
+              short_id: author.unique_id === '' ? author.short_id : author.unique_id,
+              follower_count: author.follower_count,
+              verified: !!author.custom_verify || !!author.enterprise_verify_reason
+            },
+            statistics: {
+              play_count: awemeList.reduce((sum, aweme) => sum + aweme.statistics.play_count, 0),
+              digg_count: awemeList.reduce((sum, aweme) => sum + aweme.statistics.digg_count, 0),
+              collect_count: awemeList.reduce((sum, aweme) => sum + aweme.statistics.collect_count, 0)
+            },
+            episodes: displayEpisodes,
+            timeoutSeconds,
+            selectionMode,
+            posterPage,
+            posterPageSize: EPISODE_SELECTION_PAGE_SIZE
+          })
+
+        if (buttonSelection) {
+          // 海报和按钮共用 15 集一页的页码，第 1 页是最新一集
+          const initialPage = 1
+          const poster = await renderPoster(initialPage)
+          const session = createEpisodeSelection(getEpisodeSelectionScope(this.e), {
+            title: mixInfo.mix_name,
+            platform: 'douyin',
+            scene: this.e.isFriend ? 'friend' : 'group',
+            ownerId: this.e.userId,
+            poster,
+            posterPage: initialPage,
+            renderPoster,
+            episodes: displayEpisodes.map((item) => ({
+              episode: item.episode,
+              target: { platform: 'douyin' as const, awemeId: String(item.aweme_id) }
+            })),
+            forceBurnDanmaku: this.forceBurnDanmaku
+          })
+          markParseStatSkipped(this.e)
+          const sentAt = Date.now()
+          const result = await this.e.reply(buildEpisodeSelectionReply(session, initialPage, poster))
+          setEpisodeSelectionMessage(session, result.messageId, sentAt)
+          return true
+        }
+
+        const posterPageCount = Math.ceil(displayEpisodes.length / EPISODE_SELECTION_PAGE_SIZE)
+        let posterPage = 1
+        /** 上一页海报消息，翻页发送成功后撤回，避免聊天里堆一串过期海报 */
+        let posterMessageId = ''
+        let posterMessageSentAt = 0
+        /** 子上下文消息的表情反馈流程：翻页时留到新海报发出后再算成功 */
+        let emojiFlow: EmojiReactionFlow | null = null
+
+        try {
+          for (;;) {
+            const poster = await renderPoster(posterPage)
+            const start = (posterPage - 1) * EPISODE_SELECTION_PAGE_SIZE
+            const pageEpisodes = displayEpisodes.slice(start, start + EPISODE_SELECTION_PAGE_SIZE)
+            const firstEpisode = pageEpisodes[0]?.episode ?? 0
+            const lastEpisode = pageEpisodes[pageEpisodes.length - 1]?.episode ?? 0
+            const range = firstEpisode === lastEpisode ? `第 ${firstEpisode} 集` : `第 ${firstEpisode}–${lastEpisode} 集`
+
+            const sentAt = Date.now()
+            const result = await this.e.reply([
+              ...poster,
+              segment.text(
+                `《${mixInfo.mix_name}》\n${range}（共 ${totalEpisode} 集，已列出 ${displayEpisodes.length} 集）\n第 ${posterPage}/${posterPageCount} 页\n` +
+                  `发送 第?集 选集${posterPageCount > 1 ? '，发送 上一页 / 下一页 / 第?页 翻页' : ''}（${timeoutSeconds} 秒内有效）`
+              )
+            ])
+
+            // 上一轮翻页的新海报已经发出，那条消息才算处理完成
+            if (emojiFlow) {
+              await emojiFlow.succeed()
+              // 这一轮子上下文处理完了，父消息（原链接）的 ⏳ 也收尾
+              void settleEmojiReaction(this.e)
+              emojiFlow = null
+            }
+
+            const previousMessageId = posterMessageId
+            const previousMessageSentAt = posterMessageSentAt
+            posterMessageId = result.messageId
+            posterMessageSentAt = result.messageId ? sentAt : 0
+            if (previousMessageId && canRecallEpisodeMessage(previousMessageId, previousMessageSentAt)) {
+              try {
+                await this.e.bot.recallMsg(this.e.contact, previousMessageId)
+              } catch (error) {
+                logger.debug('[选集] 撤回上一页失败:', error)
+              }
+            }
+
+            // karin.ctx 按联系人 + 用户 ID 绑定监听，只有发起人的回复会唤醒
+            const context = await karin.ctx(this.e, { reply: true, throwOnTimeout: false, time: timeoutSeconds })
+            if (!context) return true
+
+            // 用户发了新链接/新命令：结束本轮选集，交给对应处理器，避免两个等待上下文抢同一条消息
+            const replyText = context.msg.trim()
+            if (/^[#/]/.test(replyText) || /(https?:\/\/|b23\.tv|bilibili\.com|douyin\.com|iesdouyin\.com)/i.test(replyText)) {
+              return true
+            }
+
+            // 子上下文消息不经过错误处理器，单独接一套表情反馈：👀 → ⏳ → ✅/❌
+            emojiFlow = createEmojiReactionFlow(context)
+            await emojiFlow.begin()
+
+            const pageAction = parseEpisodePosterPageAction(context.msg)
+            if (pageAction) {
+              const nextPage = pageAction.type === 'prev' ? posterPage - 1 : pageAction.type === 'next' ? posterPage + 1 : pageAction.page
+              if (nextPage < 1 || nextPage > posterPageCount) {
+                await this.e.reply(`页码超出范围，请发送 1-${posterPageCount} 之间的页码`)
+                await emojiFlow.fail()
+                void settleEmojiReaction(this.e)
+                emojiFlow = null
+                continue
+              }
+              // 新海报在下一轮发出后再把这条消息算成功
+              posterPage = nextPage
+              continue
+            }
+
+            const episode = parseEpisodeNumber(context.msg)
+            // 按集号找，不按下标：接口会漏掉个别集，下标和集号对不上
+            const target = episode === null ? undefined : displayEpisodes.find((item) => item.episode === episode)
+            if (!target) {
+              await this.e.reply(
+                episode === null
+                  ? '匹配内容失败，请发送 第?集 选择集数，或发送 上一页 / 下一页 / 第?页 翻页'
+                  : `第${episode}集不在可解析的剧集里，请重新选择`
+              )
+              await emojiFlow.fail()
+              void settleEmojiReaction(this.e)
+              emojiFlow = null
+              continue
+            }
+            // 普通合集每集是独立作品，回复选中的视频标题；短剧每集文案都是同一段简介，用合集名更合适
+            const episodeTitle = (isPlaylet ? mixInfo.mix_name : target.title || mixInfo.mix_name).replace(/\s+/g, ' ').trim()
+            await this.e.reply(`收到请求，第${episode}集\n${episodeTitle}\n正在解析中`)
+
+            const targetData: DouyinIdData = { type: 'one_work', aweme_id: target.aweme_id }
+            await new DouYin(context, targetData, { forceBurnDanmaku: this.forceBurnDanmaku }).DouyinHandler(targetData)
+            await emojiFlow.succeed()
+            // 这一轮子上下文处理完了，父消息（原链接）的 ⏳ 也收尾
+            void settleEmojiReaction(this.e)
+            emojiFlow = null
+            return true
+          }
+        } catch (error) {
+          // 子上下文消息不经过错误处理器，异常路径也要给它一个结果表情
+          if (emojiFlow) await emojiFlow.fail()
+          throw error
+        }
       }
       case 'music_work': {
         this.workType = 'music'

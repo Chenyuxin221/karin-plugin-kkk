@@ -2,6 +2,83 @@
 
 # Changelog
 
+## [2.45.2](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.1...v2.45.2) (2026-10-30)
+
+
+### 🐛 错误修复
+
+* 修复部分版权番剧缺少 up_info 时海报渲染失败 ([8480cec](https://github.com/ikenxuan/karin-plugin-kkk/commit/8480cecec639db79eaad1c74e7c1e4a1533eda20))
+
+## [2.45.2-beta.4](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.2-beta.3...v2.45.2-beta.4) (2026-10-30)
+
+
+### ✨ 新功能
+
+* 选集交互消息接入表情反馈并统一父消息收尾 ([9f137b4](https://github.com/ikenxuan/karin-plugin-kkk/commit/9f137b4837ffbff6edeffe30b05915a34c919e75))
+* 增加选集功能的发起人权限控制，只有发起人能操作选集 ([2e41a7d](https://github.com/ikenxuan/karin-plugin-kkk/commit/2e41a7d5327ea32c8c4df387c8004b53fa86621d))
+
+
+### 🐛 错误修复
+
+* ci ([6aca51a](https://github.com/ikenxuan/karin-plugin-kkk/commit/6aca51aa3b4c6c89b0d210c6a1781abedf35ca07))
+* 更新作品类型判断，增加 aweme_type 61 的支持。fix #371 ([f1c00ac](https://github.com/ikenxuan/karin-plugin-kkk/commit/f1c00ace0d31d21f39bb98fc303350e696f9936d))
+
+
+### 📦 依赖更新
+
+* 更新相关依赖版本 ([5fa1d71](https://github.com/ikenxuan/karin-plugin-kkk/commit/5fa1d7184a512e8d6fa8de65faf015e11d4a2bf4))
+
+
+### 💄 UI 优化
+
+* 移除合集与番剧选集模板的装饰线条并优化排版 ([8a58ab9](https://github.com/ikenxuan/karin-plugin-kkk/commit/8a58ab93d86284c4ad481d65bd665a3cd66b5fce))
+* 优化合集、短剧、番剧的模板界面UI ([119fc96](https://github.com/ikenxuan/karin-plugin-kkk/commit/119fc96bf64f6f934735c7fa743d78b59aff97f1))
+
+## [2.45.2-beta.3](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.2-beta.2...v2.45.2-beta.3) (2026-10-27)
+
+
+### 🐛 错误修复
+
+* 更新 @ikenxuan/qrcode 依赖至 1.8.1，优化短链接生成逻辑 ([090152d](https://github.com/ikenxuan/karin-plugin-kkk/commit/090152d903e4aeecc019252ea349415e3029b068))
+* **douyin:** 优化短剧和普通合集的回复标题逻辑 ([e693205](https://github.com/ikenxuan/karin-plugin-kkk/commit/e693205882e7c1d16e76654c31d95d9c8e736a18))
+
+## [2.45.2-beta.2](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.2-beta.1...v2.45.2-beta.2) (2026-10-27)
+
+
+### 🐛 错误修复
+
+* 优化抖音合集、短剧，B站番剧解析的交互逻辑和部分UI ([122684b](https://github.com/ikenxuan/karin-plugin-kkk/commit/122684b2c427ec3977f9435c6ce8a698a6a0b1c9))
+
+## [2.45.2-beta.1](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.2-beta.0...v2.45.2-beta.1) (2026-10-26)
+
+
+### ✨ 新功能
+
+* 初步支持抖音合集、短剧解析 ([0fc91a2](https://github.com/ikenxuan/karin-plugin-kkk/commit/0fc91a2258fd2d1c6fe59defa28883845f51fbba))
+
+
+### 🐛 错误修复
+
+* **douyin:** 设置推送时改用游客接口转换sec_uid ([6ee68fa](https://github.com/ikenxuan/karin-plugin-kkk/commit/6ee68faae634447114721cc4ada5524f074d1663))
+
+
+### 🧰 其他更新
+
+* 优化发版脚本 ([6175b0c](https://github.com/ikenxuan/karin-plugin-kkk/commit/6175b0c4f0815058db0559c22651a943921a846f))
+
+## [2.45.2-beta.0](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.1...v2.45.2-beta.0) (2026-10-24)
+
+
+### ✨ 新功能
+
+* **douyin:** 推送二维码改用 amagi 签发的短链 ([e2975a3](https://github.com/ikenxuan/karin-plugin-kkk/commit/e2975a32b26384a6dcf2f1ad982b1b52abcbdbb6))
+
+
+### 🐛 错误修复
+
+* **bilibili:** 下载时避开被代理屏蔽的 PCDN 直链 (#370) ([1c64ace](https://github.com/ikenxuan/karin-plugin-kkk/commit/1c64ace13e9384a45a7e88853251a644229692cb))
+* **xiaohongshu:** 优化合并转发消息上传逻辑 ([e093d05](https://github.com/ikenxuan/karin-plugin-kkk/commit/e093d056455b9d914e7b7728d8d2ad2513c30dbf))
+
 ## [2.45.1](https://github.com/ikenxuan/karin-plugin-kkk/compare/v2.45.0...v2.45.1) (2026-10-17)
 
 
